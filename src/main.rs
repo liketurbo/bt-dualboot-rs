@@ -10,6 +10,7 @@ use std::{
 
 const WINDOWS10_REGISTRY_PATH: &str = "Windows/System32/config/SYSTEM";
 const REG_KEY_BLUETOOTH_PAIRING_KEYS: &str = r"ControlSet001\Services\BTHPORT\Parameters\Keys";
+const LINUX_BT_DIR: &str = "/var/lib/bluetooth";
 
 fn main() {
     SimpleLogger::new().init().expect("init logger");
@@ -18,7 +19,7 @@ fn main() {
     update_linux_devices(win_devices);
 }
 
-fn get_win_devices() -> Vec<Device> {
+fn get_win_devices() -> Vec<WinDevice> {
     let mounts = read_to_string("/proc/mounts").expect("failed to read /proc/mounts");
 
     let win_mounts: Vec<_> = mounts
@@ -110,8 +111,7 @@ fn get_win_devices() -> Vec<Device> {
         })
         .map(|(k, v)| {
             let s = serde_ini::to_string(&v).expect("already deserialized before so it's okay");
-            let win_device: WinMetadata =
-                serde_ini::from_str(&s).expect("problem WinDevice struct");
+            let win_device: WinInfo = serde_ini::from_str(&s).expect("problem WinDevice struct");
             (k, win_device)
         })
         .collect();
@@ -121,53 +121,12 @@ fn get_win_devices() -> Vec<Device> {
         .into_iter()
         .map(|(k, v)| {
             let mut iter = k.split("\\").collect::<Vec<&str>>().into_iter().rev();
+            let addr = iter.next().expect("should have mac").to_string();
+            let adapter_addr = iter.next().expect("should have adapter's mac").to_string();
 
-            let mut duo_holder = vec![];
-            let mut new_addr = vec![];
-
-            let addr = iter
-                .next()
-                .expect("there is always key")
-                .to_uppercase()
-                .chars()
-                .fold((&mut duo_holder, &mut new_addr), |acc, v| {
-                    acc.0.push(v);
-                    if !acc.0.is_empty() && acc.0.len() % 2 == 0 {
-                        let c_2 = acc.0.pop().expect("checked with if");
-                        let c_1 = acc.0.pop().expect("checked with if");
-                        let comb = format!("{}{}", c_1, c_2);
-                        acc.1.push(comb);
-                    }
-                    acc
-                })
-                .1
-                .join(":");
-
-            duo_holder.clear();
-            new_addr.clear();
-
-            let adapter_addr = iter
-                .next()
-                .expect("there is always adapter's key")
-                .to_uppercase()
-                .chars()
-                .fold((&mut duo_holder, &mut new_addr), |acc, v| {
-                    acc.0.push(v);
-                    if !acc.0.is_empty() && acc.0.len() % 2 == 0 {
-                        let c_2 = acc.0.pop().expect("checked with if");
-                        let c_1 = acc.0.pop().expect("checked with if");
-                        let comb = format!("{}{}", c_1, c_2);
-                        acc.1.push(comb);
-                    }
-                    acc
-                })
-                .1
-                .join(":");
-
-            Device {
-                addr,
-                adapter_addr,
-                metadata: v,
+            WinDevice {
+                info: v,
+                meta: WinMeta { addr, adapter_addr },
             }
         })
         .collect();
@@ -175,26 +134,84 @@ fn get_win_devices() -> Vec<Device> {
     devices
 }
 
-struct Device {
-    /// C8:29:0A:11:F4:C2
-    pub addr: String,
-    /// C0:FB:F9:60:1C:13
-    pub adapter_addr: String,
-    /// Metadata from Windows Registry
-    pub metadata: WinMetadata,
+#[derive(Debug)]
+struct WinDevice {
+    pub info: WinInfo,
+    pub meta: WinMeta,
 }
 
+impl WinDevice {
+    pub fn get_linux_mac(&self) -> String {
+        let mut duo_holder = vec![];
+        let mut new_addr = vec![];
+
+        let new_format = self
+            .meta
+            .addr
+            .to_uppercase()
+            .chars()
+            .fold((&mut duo_holder, &mut new_addr), |acc, v| {
+                acc.0.push(v);
+                if !acc.0.is_empty() && acc.0.len() % 2 == 0 {
+                    let c_2 = acc.0.pop().expect("checked with if");
+                    let c_1 = acc.0.pop().expect("checked with if");
+                    let comb = format!("{}{}", c_1, c_2);
+                    acc.1.push(comb);
+                }
+                acc
+            })
+            .1
+            .join(":");
+
+        new_format
+    }
+
+    pub fn get_linux_adapter_mac(&self) -> String {
+        let mut duo_holder = vec![];
+        let mut new_addr = vec![];
+
+        let new_format = self
+            .meta
+            .adapter_addr
+            .to_uppercase()
+            .chars()
+            .fold((&mut duo_holder, &mut new_addr), |acc, v| {
+                acc.0.push(v);
+                if !acc.0.is_empty() && acc.0.len() % 2 == 0 {
+                    let c_2 = acc.0.pop().expect("checked with if");
+                    let c_1 = acc.0.pop().expect("checked with if");
+                    let comb = format!("{}{}", c_1, c_2);
+                    acc.1.push(comb);
+                }
+                acc
+            })
+            .1
+            .join(":");
+
+        new_format
+    }
+}
+
+#[derive(Debug)]
+struct WinMeta {
+    /// c8290a11f4c2
+    pub addr: String,
+    /// c0fbf9601c13
+    pub adapter_addr: String,
+}
+
+/// Bluetooth device information from Windows Registry
 #[derive(Deserialize, Debug)]
-struct WinMetadata {
+struct WinInfo {
     /// "AuthReq": "dword:0000002d"
     #[serde(rename = "AuthReq")]
     pub auth_req: String,
     /// "ERand": "hex(b):00,00,00,00,00,00,00,00"
     #[serde(rename = "ERand")]
-    pub e_rand: String,
+    pub e_rand: ERand,
     /// "LTK": "hex:c2,90,19,3b,1e,be,c7,d0,18,c6,4f,e9,67,ad,6b,d5"
     #[serde(rename = "LTK")]
-    pub ltk: String,
+    pub ltk: WinLtk,
     /// "KeyLength": "dword:00000000"
     #[serde(rename = "KeyLength")]
     pub key_length: String,
@@ -215,6 +232,192 @@ struct WinMetadata {
     pub irk: Option<String>,
 }
 
-fn update_linux_devices(win_devices: Vec<Device>) {
+trait LinuxDataFormat {
+    fn get_linux_format(&self) -> String;
+}
+
+#[derive(Deserialize, Debug)]
+struct WinLtk(String);
+
+impl LinuxDataFormat for WinLtk {
+    fn get_linux_format(&self) -> String {
+        self.0[4..]
+            .to_uppercase()
+            .chars()
+            .filter(|c| *c != ',')
+            .collect()
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct ERand(String);
+
+impl LinuxDataFormat for ERand {
+    fn get_linux_format(&self) -> String {
+        u64::from_str_radix(
+            &self.0[7..]
+                .to_string()
+                .chars()
+                .filter(|c| *c != ',')
+                .collect::<String>(),
+            16,
+        )
+        .expect("probably 64 bit number")
+        .to_string()
+    }
+}
+
+// IdentityResolvingKey, SlaveLongTermKey, PeripheralLongTermKey <- IRK, LTK, ERand, EDIV
+// IdentityResolvingKey, LocalSignatureKey, LongTermKey, LongTermKey, LongTermKey, LongTermKey
+
+fn update_linux_devices(win_devices: Vec<WinDevice>) {
+    win_devices.iter().for_each(|d| {
+        println!("device {:?}", d);
+        println!("ltk(linux) {}", d.info.ltk.get_linux_format());
+
+        let dev_path = Path::new(LINUX_BT_DIR)
+            .join(&d.get_linux_adapter_mac())
+            .join(&d.get_linux_mac());
+        if !dev_path.exists() {
+            warn!(
+                "device from windows with mac {} is not connected in linux",
+                d.get_linux_mac()
+            );
+            return;
+        }
+
+        let info_path = Path::new(&dev_path).join("info");
+        let info_str = read_to_string(&info_path).expect("no info file in mac folder");
+        println!("str {}", info_str);
+        let dev = LinuxDevice {
+            info: serde_ini::from_str(&info_str).expect("linux devices should be okay"),
+        };
+        println!("dev {:?}", dev);
+    });
+}
+
+#[derive(Debug)]
+struct LinuxDevice {
+    info: LinuxInfo,
+}
+
+#[derive(Deserialize, Debug)]
+struct LinuxInfo {
+    #[serde(rename = "LinkKey")]
+    link_key: Option<LinkKey>,
+    #[serde(rename = "IdentityResolvingKey")]
+    identity_resolving_key: Option<IdentityResolvingKey>,
+    #[serde(rename = "SlaveLongTermKey")]
+    slave_long_term_key: Option<SlaveLongTermKey>,
+    #[serde(rename = "PeripheralLongTermKey")]
+    peripheral_long_term_key: Option<PeripheralLongTermKey>,
+    #[serde(rename = "LocalSignatureKey")]
+    local_signature_key: Option<LocalSignatureKey>,
+    #[serde(rename = "LongTermKey")]
+    long_term_key: Option<LongTermKey>,
+}
+
+#[derive(Deserialize, Debug)]
+struct LinkKey {
+    /// Key=786DC4332D385A48C4E718FE0B84FF20
+    #[serde(rename = "Key")]
+    key: String,
+    /// Type=4
+    #[serde(rename = "Type")]
+    r#type: String,
+    /// PINLength=0
+    #[serde(rename = "PINLength")]
+    pin_length: String,
+}
+
+impl LinkKey {
+    fn from(link_key: &LinkKey, win_ltk: String) -> LinkKey {
+        todo!()
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct IdentityResolvingKey {
+    /// Key=786DC4332D385A48C4E718FE0B84FF20
+    #[serde(rename = "Key")]
+    key: String,
+}
+
+impl IdentityResolvingKey {
+    fn from(
+        identity_resolving_key: &IdentityResolvingKey,
+        win_ltk: String,
+    ) -> IdentityResolvingKey {
+        todo!()
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct SlaveLongTermKey {
+    /// Key=128515400334819AA35B2D6C010BCEB1
+    #[serde(rename = "Key")]
+    key: String,
+    /// Authenticated=2
+    #[serde(rename = "Authenticated")]
+    authenticated: String,
+    /// EncSize=16
+    #[serde(rename = "EncSize")]
+    enc_size: String,
+    /// EDiv=0
+    #[serde(rename = "EDiv")]
+    e_div: String,
+    /// Rand=0
+    #[serde(rename = "Rand")]
+    rand: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct PeripheralLongTermKey {
+    /// Key=128515400334819AA35B2D6C010BCEB1
+    #[serde(rename = "Key")]
+    key: String,
+    /// Authenticated=2
+    #[serde(rename = "Authenticated")]
+    authenticated: String,
+    /// EncSize=16
+    #[serde(rename = "EncSize")]
+    enc_size: String,
+    /// EDiv=0
+    #[serde(rename = "EDiv")]
+    e_div: String,
+    /// Rand=0
+    #[serde(rename = "Rand")]
+    rand: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct LocalSignatureKey {
+    /// Key=128515400334819AA35B2D6C010BCEB1
+    #[serde(rename = "Key")]
+    key: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct LongTermKey {
+    /// Key=128515400334819AA35B2D6C010BCEB1
+    #[serde(rename = "Key")]
+    key: String,
+    /// Authenticated=2
+    #[serde(rename = "Authenticated")]
+    authenticated: String,
+    /// EncSize=16
+    #[serde(rename = "EncSize")]
+    enc_size: String,
+    /// EDiv=0
+    #[serde(rename = "EDiv")]
+    e_div: String,
+    /// Rand=0
+    #[serde(rename = "Rand")]
+    rand: String,
+}
+
+/// From hex:c2,90,19,3b,1e,be,c7,d0,18,c6,4f,e9,67,ad,6b,d5
+/// To C290193B1EBEC7D018C64FE967AD6BD5
+fn win_key_format_to_linux(win_key: String) -> String {
     todo!()
 }
