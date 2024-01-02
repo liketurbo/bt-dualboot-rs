@@ -1,4 +1,4 @@
-use log::{debug, warn};
+use log::{debug, warn, info};
 use simple_logger::SimpleLogger;
 use std::{
     collections::HashMap,
@@ -220,6 +220,6 @@ fn update_linux_devices(win_devices: Vec<WinDevice>) {
             let str = serde_ini::to_string(&d.info).unwrap();
             let mut file = File::create(d_path.join("info")).expect("can't open info file");
             file.write_all(str.as_bytes()).expect("writing of update failed");
-            debug!("updated {:?} device", d_path);
+            info!("updated {:?} device", d_path);
         });
 }
