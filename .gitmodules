@@ -1,0 +1,4 @@
+[submodule "serde-ini"]
+	path = serde-ini
+	url = git@github.com:liketurbo/serde-ini.git
+	branch = serde-none

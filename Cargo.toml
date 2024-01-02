@@ -9,4 +9,4 @@ edition = "2021"
 log = "^0.4"
 simple_logger = "^4.3"
 serde = { version = "^1.0", features = ["derive"] }
-serde_ini = "^0.2"
+serde_ini = { path = "./serde-ini" }

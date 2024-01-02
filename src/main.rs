@@ -2,9 +2,9 @@ use log::{debug, warn};
 use simple_logger::SimpleLogger;
 use std::{
     collections::HashMap,
-    fs::read_to_string,
+    fs::{read_to_string, File},
     path::Path,
-    process::{Command, Stdio},
+    process::{Command, Stdio}, io::Write,
 };
 use win_device::{LinuxDataFormat, WinDevice};
 
@@ -131,7 +131,7 @@ fn get_win_devices() -> Vec<WinDevice> {
             let mut iter = k.split("\\").collect::<Vec<&str>>().into_iter().rev();
             let addr = iter.next().expect("should have mac").to_string();
             let adapter_addr = iter.next().expect("should have adapter's mac").to_string();
-
+            
             WinDevice {
                 info: v,
                 meta: WinMeta {
@@ -146,63 +146,80 @@ fn get_win_devices() -> Vec<WinDevice> {
 }
 
 fn update_linux_devices(win_devices: Vec<WinDevice>) {
-    win_devices.iter().for_each(|d| {
-        println!("device {:?}", d);
-
-        let dev_path = Path::new(LINUX_BT_DIR)
-            .join(&d.meta.adapter_mac.get_linux_format())
-            .join(&d.meta.mac.get_linux_format());
-        if !dev_path.exists() {
-            warn!(
-                "device from windows with mac {} is not connected in linux",
-                d.meta.mac.get_linux_format()
-            );
-            return;
-        }
-
-        let info_path = Path::new(&dev_path).join("info");
-        let info_str = read_to_string(&info_path).expect("no info file in mac folder");
-        println!("str {}", info_str);
-        let mut dev = LinuxDevice {
-            info: serde_ini::from_str(&info_str).expect("linux devices should be okay"),
-        };
-
-        if let Some(link_key) = dev.info.link_key.as_mut() {
-            let _ = std::mem::replace(link_key, link_key.recreate(&d.info.ltk));
-        }
-
-        if let Some(identity_resolving_key) = dev.info.identity_resolving_key.as_mut() {
-            if let Some(irk) = d.info.irk.as_ref() {
-                let _ =
-                    std::mem::replace(identity_resolving_key, identity_resolving_key.recreate(irk));
+    win_devices
+        .iter()
+        .map(|d| {
+            let d_path = Path::new(LINUX_BT_DIR)
+                .join(&d.meta.adapter_mac.get_linux_format())
+                .join(&d.meta.mac.get_linux_format());
+            (d, d_path)
+        })
+        .filter(|(d, d_path)| {
+            if !d_path.exists() {
+                warn!(
+                    "device from windows with mac {} is not connected in linux",
+                    d.meta.mac.get_linux_format()
+                );
+                false
+            } else {
+                true
             }
-        }
+        })
+        .map(|(d, d_path)| {
+            let info_path = Path::new(&d_path).join("info");
+            let info_str = read_to_string(&info_path).expect("no info file in mac folder");
 
-        if let Some(peripheral_long_term_key) = dev.info.peripheral_long_term_key.as_mut() {
-            let _ = std::mem::replace(
-                peripheral_long_term_key,
-                peripheral_long_term_key.recreate(&d.info.ltk),
-            );
-        }
+            let mut dev = LinuxDevice {
+                info: serde_ini::from_str(&info_str).expect("info always for bt device"),
+            };
 
-        if let Some(slave_long_term_key) = dev.info.slave_long_term_key.as_mut() {
-            let _ = std::mem::replace(
-                slave_long_term_key,
-                slave_long_term_key.recreate(&d.info.ltk),
-            );
-        }
-
-        if let Some(local_signature_key) = dev.info.local_signature_key.as_mut() {
-            if let Some(csrk) = d.info.csrk.as_ref() {
-                let _ = std::mem::replace(local_signature_key, local_signature_key.recreate(csrk));
+            if let Some(link_key) = dev.info.link_key.as_mut() {
+                let _ = std::mem::replace(link_key, link_key.recreate(&d.info.ltk));
             }
-        }
 
-        if let Some(long_term_key) = dev.info.long_term_key.as_mut() {
-            let _ = std::mem::replace(
-                long_term_key,
-                long_term_key.recreate(&d.info.ltk, &d.info.e_rand, &d.info.e_div),
-            );
-        }
-    });
+            if let Some(identity_resolving_key) = dev.info.identity_resolving_key.as_mut() {
+                if let Some(irk) = d.info.irk.as_ref() {
+                    let _ = std::mem::replace(
+                        identity_resolving_key,
+                        identity_resolving_key.recreate(irk),
+                    );
+                }
+            }
+
+            if let Some(peripheral_long_term_key) = dev.info.peripheral_long_term_key.as_mut() {
+                let _ = std::mem::replace(
+                    peripheral_long_term_key,
+                    peripheral_long_term_key.recreate(&d.info.ltk),
+                );
+            }
+
+            if let Some(slave_long_term_key) = dev.info.slave_long_term_key.as_mut() {
+                let _ = std::mem::replace(
+                    slave_long_term_key,
+                    slave_long_term_key.recreate(&d.info.ltk),
+                );
+            }
+
+            if let Some(local_signature_key) = dev.info.local_signature_key.as_mut() {
+                if let Some(csrk) = d.info.csrk.as_ref() {
+                    let _ =
+                        std::mem::replace(local_signature_key, local_signature_key.recreate(csrk));
+                }
+            }
+
+            if let Some(long_term_key) = dev.info.long_term_key.as_mut() {
+                let _ = std::mem::replace(
+                    long_term_key,
+                    long_term_key.recreate(&d.info.ltk, &d.info.e_rand, &d.info.e_div),
+                );
+            }
+
+            (dev, d_path)
+        })
+        .for_each(|(d, d_path)| {
+            let str = serde_ini::to_string(&d.info).unwrap();
+            let mut file = File::create(d_path.join("info")).expect("can't open info file");
+            file.write_all(str.as_bytes()).expect("writing of update failed");
+            debug!("updated {:?} device", d_path);
+        });
 }
