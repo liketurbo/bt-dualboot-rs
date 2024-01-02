@@ -8,8 +8,6 @@ pub(crate) struct WinDevice {
 
 #[derive(Debug)]
 pub(crate) struct WinMeta {
-    /// c8290a11f4c2
-    pub mac: WinMac,
     /// c0fbf9601c13
     pub adapter_mac: WinMac,
 }
@@ -48,25 +46,25 @@ impl LinuxDataFormat for WinMac {
 pub(crate) struct WinInfo {
     /// "AuthReq": "dword:0000002d"
     #[serde(rename = "AuthReq")]
-    pub auth_req: String,
+    pub auth_req: Option<String>,
     /// "ERand": "hex(b):00,00,00,00,00,00,00,00"
     #[serde(rename = "ERand")]
-    pub e_rand: ERand,
+    pub e_rand: Option<ERand>,
     /// "LTK": "hex:c2,90,19,3b,1e,be,c7,d0,18,c6,4f,e9,67,ad,6b,d5"
     #[serde(rename = "LTK")]
     pub ltk: Ltk,
     /// "KeyLength": "dword:00000000"
     #[serde(rename = "KeyLength")]
-    pub key_length: String,
+    pub key_length: Option<String>,
     /// "EDIV": "dword:00000000"
     #[serde(rename = "EDIV")]
-    pub e_div: EDiv,
+    pub e_div: Option<EDiv>,
     /// "AddressType": "dword:00000001"
     #[serde(rename = "AddressType")]
     pub address_type: Option<String>,
     /// "Address": "hex(b):c1,f4,11,0a,29,c8,00,00"
     #[serde(rename = "Address")]
-    pub address: String,
+    pub address: Address,
     /// "MasterIRKStatus": "dword:00000001"
     #[serde(rename = "MasterIRKStatus")]
     pub master_irk_status: Option<String>,

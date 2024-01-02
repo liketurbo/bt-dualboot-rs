@@ -92,8 +92,93 @@ fn get_win_devices() -> Vec<WinDevice> {
     let raw_values: HashMap<String, HashMap<String, String>> =
         serde_ini::from_str(&output_clean).expect("deserializing ini file");
 
-    let bt_values: HashMap<_, _> = raw_values
-        .into_iter()
+    let bt_dev_count = raw_values
+        .iter()
+        .filter(|(k, _)| {
+            let path_len = k.split('\\').count();
+            path_len == 8
+        })
+        .count();
+    if bt_dev_count > 1 {
+        debug!("bt devices count {}", bt_dev_count);
+        warn!("only supports 1 bt device");
+    }
+
+    let bt_dev_mac = raw_values
+        .iter()
+        .find(|(k, _)| {
+            let path_len = k.split('\\').count();
+            path_len == 8
+        })
+        .map(|(k, _)| {
+            let adapter_addr = k
+                .split("\\")
+                .collect::<Vec<&str>>()
+                .into_iter()
+                .rev()
+                .next()
+                .expect("should have adapter's mac")
+                .to_string();
+            adapter_addr
+        })
+        .expect("at least one adapter");
+
+    let bt_values_1 = raw_values
+        .iter()
+        .find(|(k, _)| {
+            let path_len = k.split("\\").count();
+            path_len == 8
+            // TODO: Get rid of this repeat
+        })
+        .map(|(k, v)| {
+            // Remove "" quotes around the keys
+            // "AuthReq" -> AuthReq
+            let n_h: HashMap<_, _> = v
+                .into_iter()
+                .map(|(n_k, n_v)| (n_k.trim_matches('"').to_string(), n_v))
+                .collect();
+            (k, n_h)
+        })
+        .map(|(k, v)| {
+            v.into_iter()
+                .filter(|(k, v)| if k == "MasterIRK" { false } else { true })
+        })
+        .expect("bt device registry can't be empty")
+        .map(|(k, v)| {
+            let addr = format!(
+                "hex(b):{},00,00",
+                k.as_bytes()
+                    .chunks(2)
+                    .map(|c| {
+                        format!(
+                            "{:02x}",
+                            u8::from_str_radix(std::str::from_utf8(c).expect("derived before"), 16)
+                                .expect("derived before")
+                        )
+                    })
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let mut raw_bt = HashMap::new();
+            raw_bt.insert("Address", addr);
+            raw_bt.insert("LTK", v.clone());
+            let s =
+                serde_ini::to_string(&raw_bt).expect("already deserialized before so it's okay");
+            let info: win_device::WinInfo =
+                serde_ini::from_str(&s).expect("problem WinDevice struct");
+
+            WinDevice {
+                info,
+                meta: win_device::WinMeta {
+                    adapter_mac: win_device::WinMac(bt_dev_mac.clone()),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let bt_values_2: Vec<_> = raw_values
+        .iter()
         .filter(|(k, _)| {
             // Ignore an empty set and bt adapters
             // HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet001\\Services\\BTHPORT\\Parameters\\Keys
@@ -121,27 +206,29 @@ fn get_win_devices() -> Vec<WinDevice> {
                 serde_ini::from_str(&s).expect("problem WinDevice struct");
             (k, win_device)
         })
-        .collect();
-    debug!("found {} device(s)", bt_values.len());
-
-    let devices: Vec<_> = bt_values
         .into_iter()
         .map(|(k, v)| {
-            let mut iter = k.split("\\").collect::<Vec<&str>>().into_iter().rev();
-            let addr = iter.next().expect("should have mac").to_string();
-            let adapter_addr = iter.next().expect("should have adapter's mac").to_string();
+            let iter = k.split("\\").collect::<Vec<&str>>().into_iter().rev();
+            let adapter_addr = iter
+                .skip(1)
+                .next()
+                .expect("should have adapter's mac")
+                .to_string();
 
             WinDevice {
                 info: v,
                 meta: win_device::WinMeta {
-                    mac: win_device::WinMac(addr),
                     adapter_mac: win_device::WinMac(adapter_addr),
                 },
             }
         })
         .collect();
+    debug!("found {} separate device(s)", bt_values_2.len());
 
-    devices
+    let mut all_devices = vec![];
+    all_devices.extend(bt_values_1);
+    all_devices.extend(bt_values_2);
+    all_devices
 }
 
 fn update_linux_devices(win_devices: Vec<WinDevice>) {
@@ -150,14 +237,14 @@ fn update_linux_devices(win_devices: Vec<WinDevice>) {
         .map(|d| {
             let d_path = Path::new(LINUX_BT_DIR)
                 .join(&d.meta.adapter_mac.get_linux_format())
-                .join(&d.meta.mac.get_linux_format());
+                .join(&d.info.address.get_linux_format());
             (d, d_path)
         })
         .filter(|(d, d_path)| {
             if !d_path.exists() {
                 warn!(
                     "device from windows with mac {} is not connected in linux",
-                    d.meta.mac.get_linux_format()
+                    d.info.address.get_linux_format()
                 );
                 false
             } else {
@@ -208,25 +295,23 @@ fn update_linux_devices(win_devices: Vec<WinDevice>) {
             }
 
             if let Some(long_term_key) = linux_dev.info.long_term_key.as_mut() {
-                let _ = std::mem::replace(
-                    long_term_key,
-                    long_term_key.recreate(
-                        &win_dev.info.ltk,
-                        &win_dev.info.e_rand,
-                        &win_dev.info.e_div,
-                    ),
-                );
+                if let Some(e_rand) = win_dev.info.e_rand.as_ref() {
+                    if let Some(e_div) = win_dev.info.e_div.as_ref() {
+                        let _ = std::mem::replace(
+                            long_term_key,
+                            long_term_key.recreate(&win_dev.info.ltk, e_rand, e_div),
+                        );
+                    }
+                }
             }
 
             (linux_dev, d_path)
         })
         .for_each(|(d, d_path)| {
-            debug!("skipped update of device {:?}", d_path);
-            /*
-                       let str = serde_ini::to_string(&d.info).unwrap();
-                       let mut file = File::create(d_path.join("info")).expect("can't open info file");
-                       file.write_all(str.as_bytes()).expect("writing of update failed");
-                       info!("updated {:?} device", d_path);
-            */
+            let str = serde_ini::to_string(&d.info).unwrap();
+            let mut file = File::create(d_path.join("info")).expect("can't open info file");
+            file.write_all(str.as_bytes())
+                .expect("writing of update failed");
+            info!("updated {:?} device", d_path);
         });
 }
