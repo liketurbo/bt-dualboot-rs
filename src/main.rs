@@ -1,17 +1,15 @@
-use log::{debug, warn, info};
+use log::{debug, info, warn};
 use simple_logger::SimpleLogger;
 use std::{
     collections::HashMap,
     fs::{read_to_string, File},
+    io::Write,
     path::Path,
-    process::{Command, Stdio}, io::Write,
+    process::{Command, Stdio},
 };
 use win_device::{LinuxDataFormat, WinDevice};
 
-use crate::{
-    linux_device::LinuxDevice,
-    win_device::{WinInfo, WinMac, WinMeta},
-};
+use crate::linux_device::LinuxDevice;
 
 mod linux_device;
 mod win_device;
@@ -119,7 +117,8 @@ fn get_win_devices() -> Vec<WinDevice> {
         })
         .map(|(k, v)| {
             let s = serde_ini::to_string(&v).expect("already deserialized before so it's okay");
-            let win_device: WinInfo = serde_ini::from_str(&s).expect("problem WinDevice struct");
+            let win_device: win_device::WinInfo =
+                serde_ini::from_str(&s).expect("problem WinDevice struct");
             (k, win_device)
         })
         .collect();
@@ -131,12 +130,12 @@ fn get_win_devices() -> Vec<WinDevice> {
             let mut iter = k.split("\\").collect::<Vec<&str>>().into_iter().rev();
             let addr = iter.next().expect("should have mac").to_string();
             let adapter_addr = iter.next().expect("should have adapter's mac").to_string();
-            
+
             WinDevice {
                 info: v,
-                meta: WinMeta {
-                    mac: WinMac(addr),
-                    adapter_mac: WinMac(adapter_addr),
+                meta: win_device::WinMeta {
+                    mac: win_device::WinMac(addr),
+                    adapter_mac: win_device::WinMac(adapter_addr),
                 },
             }
         })
@@ -165,20 +164,20 @@ fn update_linux_devices(win_devices: Vec<WinDevice>) {
                 true
             }
         })
-        .map(|(d, d_path)| {
+        .map(|(win_dev, d_path)| {
             let info_path = Path::new(&d_path).join("info");
             let info_str = read_to_string(&info_path).expect("no info file in mac folder");
 
-            let mut dev = LinuxDevice {
+            let mut linux_dev = LinuxDevice {
                 info: serde_ini::from_str(&info_str).expect("info always for bt device"),
             };
 
-            if let Some(link_key) = dev.info.link_key.as_mut() {
-                let _ = std::mem::replace(link_key, link_key.recreate(&d.info.ltk));
+            if let Some(link_key) = linux_dev.info.link_key.as_mut() {
+                let _ = std::mem::replace(link_key, link_key.recreate(&win_dev.info.ltk));
             }
 
-            if let Some(identity_resolving_key) = dev.info.identity_resolving_key.as_mut() {
-                if let Some(irk) = d.info.irk.as_ref() {
+            if let Some(identity_resolving_key) = linux_dev.info.identity_resolving_key.as_mut() {
+                if let Some(irk) = win_dev.info.irk.as_ref() {
                     let _ = std::mem::replace(
                         identity_resolving_key,
                         identity_resolving_key.recreate(irk),
@@ -186,40 +185,48 @@ fn update_linux_devices(win_devices: Vec<WinDevice>) {
                 }
             }
 
-            if let Some(peripheral_long_term_key) = dev.info.peripheral_long_term_key.as_mut() {
+            if let Some(peripheral_long_term_key) = linux_dev.info.peripheral_long_term_key.as_mut()
+            {
                 let _ = std::mem::replace(
                     peripheral_long_term_key,
-                    peripheral_long_term_key.recreate(&d.info.ltk),
+                    peripheral_long_term_key.recreate(&win_dev.info.ltk),
                 );
             }
 
-            if let Some(slave_long_term_key) = dev.info.slave_long_term_key.as_mut() {
+            if let Some(slave_long_term_key) = linux_dev.info.slave_long_term_key.as_mut() {
                 let _ = std::mem::replace(
                     slave_long_term_key,
-                    slave_long_term_key.recreate(&d.info.ltk),
+                    slave_long_term_key.recreate(&win_dev.info.ltk),
                 );
             }
 
-            if let Some(local_signature_key) = dev.info.local_signature_key.as_mut() {
-                if let Some(csrk) = d.info.csrk.as_ref() {
+            if let Some(local_signature_key) = linux_dev.info.local_signature_key.as_mut() {
+                if let Some(csrk) = win_dev.info.csrk.as_ref() {
                     let _ =
                         std::mem::replace(local_signature_key, local_signature_key.recreate(csrk));
                 }
             }
 
-            if let Some(long_term_key) = dev.info.long_term_key.as_mut() {
+            if let Some(long_term_key) = linux_dev.info.long_term_key.as_mut() {
                 let _ = std::mem::replace(
                     long_term_key,
-                    long_term_key.recreate(&d.info.ltk, &d.info.e_rand, &d.info.e_div),
+                    long_term_key.recreate(
+                        &win_dev.info.ltk,
+                        &win_dev.info.e_rand,
+                        &win_dev.info.e_div,
+                    ),
                 );
             }
 
-            (dev, d_path)
+            (linux_dev, d_path)
         })
         .for_each(|(d, d_path)| {
-            let str = serde_ini::to_string(&d.info).unwrap();
-            let mut file = File::create(d_path.join("info")).expect("can't open info file");
-            file.write_all(str.as_bytes()).expect("writing of update failed");
-            info!("updated {:?} device", d_path);
+            debug!("skipped update of device {:?}", d_path);
+            /*
+                       let str = serde_ini::to_string(&d.info).unwrap();
+                       let mut file = File::create(d_path.join("info")).expect("can't open info file");
+                       file.write_all(str.as_bytes()).expect("writing of update failed");
+                       info!("updated {:?} device", d_path);
+            */
         });
 }

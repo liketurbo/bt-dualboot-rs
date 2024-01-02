@@ -51,30 +51,30 @@ pub(crate) struct WinInfo {
     pub auth_req: String,
     /// "ERand": "hex(b):00,00,00,00,00,00,00,00"
     #[serde(rename = "ERand")]
-    pub e_rand: WinERand,
+    pub e_rand: ERand,
     /// "LTK": "hex:c2,90,19,3b,1e,be,c7,d0,18,c6,4f,e9,67,ad,6b,d5"
     #[serde(rename = "LTK")]
-    pub ltk: WinLtk,
+    pub ltk: Ltk,
     /// "KeyLength": "dword:00000000"
     #[serde(rename = "KeyLength")]
     pub key_length: String,
     /// "EDIV": "dword:00000000"
     #[serde(rename = "EDIV")]
-    pub e_div: WinEDiv,
+    pub e_div: EDiv,
     /// "AddressType": "dword:00000001"
     #[serde(rename = "AddressType")]
     pub address_type: Option<String>,
     /// "Address": "hex(b):c1,f4,11,0a,29,c8,00,00"
     #[serde(rename = "Address")]
-    pub address: Option<String>,
+    pub address: String,
     /// "MasterIRKStatus": "dword:00000001"
     #[serde(rename = "MasterIRKStatus")]
     pub master_irk_status: Option<String>,
     /// "IRK": "hex:fc,ea,f8,3e,e3,ee,ee,d0,96,61,96,2a,6e,b0,33,8a"
     #[serde(rename = "IRK")]
-    pub irk: Option<WinIrk>,
+    pub irk: Option<Irk>,
     /// "CSRK": "hex:fc,ea,f8,3e,e3,ee,ee,d0,96,61,96,2a,6e,b0,33,8a"
-    pub csrk: Option<WinCsrk>,
+    pub csrk: Option<Csrk>,
 }
 
 pub(crate) trait LinuxDataFormat {
@@ -82,9 +82,9 @@ pub(crate) trait LinuxDataFormat {
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct WinLtk(String);
+pub(crate) struct Ltk(String);
 
-impl LinuxDataFormat for WinLtk {
+impl LinuxDataFormat for Ltk {
     fn get_linux_format(&self) -> String {
         self.0[4..]
             .to_uppercase()
@@ -95,9 +95,9 @@ impl LinuxDataFormat for WinLtk {
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct WinERand(String);
+pub(crate) struct ERand(String);
 
-impl LinuxDataFormat for WinERand {
+impl LinuxDataFormat for ERand {
     fn get_linux_format(&self) -> String {
         u64::from_str_radix(
             &self.0[7..]
@@ -113,18 +113,18 @@ impl LinuxDataFormat for WinERand {
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct WinEDiv(String);
+pub(crate) struct EDiv(String);
 
-impl LinuxDataFormat for WinEDiv {
+impl LinuxDataFormat for EDiv {
     fn get_linux_format(&self) -> String {
         self.0[6..].to_string()
     }
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct WinIrk(String);
+pub(crate) struct Irk(String);
 
-impl LinuxDataFormat for WinIrk {
+impl LinuxDataFormat for Irk {
     fn get_linux_format(&self) -> String {
         self.0[4..]
             .to_uppercase()
@@ -135,14 +135,31 @@ impl LinuxDataFormat for WinIrk {
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct WinCsrk(String);
+pub(crate) struct Csrk(String);
 
-impl LinuxDataFormat for WinCsrk {
+impl LinuxDataFormat for Csrk {
     fn get_linux_format(&self) -> String {
         self.0[4..]
             .to_uppercase()
             .chars()
             .filter(|c| *c != ',')
             .collect()
+    }
+}
+
+#[derive(Deserialize, Debug)]
+pub(crate) struct Address(String);
+
+impl LinuxDataFormat for Address {
+    fn get_linux_format(&self) -> String {
+        self.0[7..]
+            .to_uppercase()
+            .split(",")
+            .collect::<Vec<_>>()
+            .into_iter()
+            .take(6)
+            .rev()
+            .collect::<Vec<_>>()
+            .join(":")
     }
 }

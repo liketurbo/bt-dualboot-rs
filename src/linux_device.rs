@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::win_device::{LinuxDataFormat, WinCsrk, WinEDiv, WinERand, WinIrk, WinLtk};
+use crate::win_device::{LinuxDataFormat, Csrk, EDiv, ERand, Irk, Ltk};
 
 #[derive(Debug)]
 pub(crate) struct LinuxDevice {
@@ -87,7 +87,7 @@ pub(crate) struct LinkKey {
 }
 
 impl LinkKey {
-    pub fn recreate(&self, ltk: &WinLtk) -> Self {
+    pub fn recreate(&self, ltk: &Ltk) -> Self {
         Self {
             key: ltk.get_linux_format(),
             r#type: self.r#type.clone(),
@@ -104,7 +104,7 @@ pub(crate) struct IdentityResolvingKey {
 }
 
 impl IdentityResolvingKey {
-    pub fn recreate(&self, irk: &WinIrk) -> Self {
+    pub fn recreate(&self, irk: &Irk) -> Self {
         Self {
             key: irk.get_linux_format(),
         }
@@ -131,7 +131,7 @@ pub(crate) struct SlaveLongTermKey {
 }
 
 impl SlaveLongTermKey {
-    pub fn recreate(&self, ltk: &WinLtk) -> Self {
+    pub fn recreate(&self, ltk: &Ltk) -> Self {
         Self {
             key: ltk.get_linux_format(),
             authenticated: self.authenticated.clone(),
@@ -162,7 +162,7 @@ pub(crate) struct PeripheralLongTermKey {
 }
 
 impl PeripheralLongTermKey {
-    pub fn recreate(&self, ltk: &WinLtk) -> Self {
+    pub fn recreate(&self, ltk: &Ltk) -> Self {
         Self {
             key: ltk.get_linux_format(),
             authenticated: self.authenticated.clone(),
@@ -181,7 +181,7 @@ pub(crate) struct LocalSignatureKey {
 }
 
 impl LocalSignatureKey {
-    pub fn recreate(&self, csrk: &WinCsrk) -> Self {
+    pub fn recreate(&self, csrk: &Csrk) -> Self {
         Self {
             key: csrk.get_linux_format(),
         }
@@ -208,7 +208,7 @@ pub(crate) struct LongTermKey {
 }
 
 impl LongTermKey {
-    pub fn recreate(&self, ltk: &WinLtk, e_rand: &WinERand, e_div: &WinEDiv) -> Self {
+    pub fn recreate(&self, ltk: &Ltk, e_rand: &ERand, e_div: &EDiv) -> Self {
         Self {
             key: ltk.get_linux_format(),
             authenticated: self.authenticated.clone(),
