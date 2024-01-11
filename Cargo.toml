@@ -10,3 +10,5 @@ log = "^0.4"
 simple_logger = "^4.3"
 serde = { version = "^1.0", features = ["derive"] }
 serde_ini = { path = "./serde-ini" }
+clap = { version = "^4.4", features = ["derive"] }
+inquire = "^0.6"

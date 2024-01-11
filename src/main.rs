@@ -1,4 +1,7 @@
-use log::{debug, info, warn};
+use clap::Parser;
+use cli::Cli;
+use inquire::{InquireError, Select};
+use log::{debug, error, info, warn};
 use simple_logger::SimpleLogger;
 use std::{
     collections::HashMap,
@@ -6,60 +9,104 @@ use std::{
     io::Write,
     path::Path,
     process::{Command, Stdio},
+    string::FromUtf8Error,
 };
 use win_device::{LinuxDataFormat, WinDevice};
 
-use crate::linux_device::LinuxDevice;
+use crate::{linux_device::LinuxDevice, utils::is_valid_64_hex};
 
+mod cli;
 mod linux_device;
+mod utils;
 mod win_device;
 
 const WINDOWS10_REGISTRY_PATH: &str = "Windows/System32/config/SYSTEM";
 const REG_KEY_BLUETOOTH_PAIRING_KEYS: &str = r"ControlSet001\Services\BTHPORT\Parameters\Keys";
 const LINUX_BT_DIR: &str = "/var/lib/bluetooth";
 
-fn main() {
-    SimpleLogger::new().init().expect("init logger");
-
-    let win_devices = get_win_devices();
-    update_linux_devices(win_devices);
+#[derive(Debug)]
+pub enum CustomError {
+    BtDualBootError(Box<dyn std::error::Error>),
+    InquireError(InquireError),
+    SerdeError(serde_ini::de::Error),
 }
 
-fn get_win_devices() -> Vec<WinDevice> {
-    let mounts = read_to_string("/proc/mounts").expect("failed to read /proc/mounts");
+pub type CustomResult<T> = Result<T, CustomError>;
 
-    let win_mounts: Vec<_> = mounts
-        .split('\n')
-        .filter(|l| l.starts_with("/dev/") && !l.starts_with("/dev/loop"))
-        .map(|l| {
-            let mnt_point = l
-                .split(' ')
-                .skip(1)
-                .next()
-                .expect(&format!("no mounting point in the dev entry {}", l));
-            mnt_point
-        })
-        .filter(|mnt_p| {
-            Path::new(mnt_p)
-                .join(Path::new(WINDOWS10_REGISTRY_PATH))
-                .exists()
-        })
-        .collect();
+impl Into<CustomError> for InquireError {
+    fn into(self) -> CustomError {
+        CustomError::InquireError(self)
+    }
+}
+
+impl Into<CustomError> for &str {
+    fn into(self) -> CustomError {
+        CustomError::BtDualBootError(self.into())
+    }
+}
+
+impl Into<CustomError> for String {
+    fn into(self) -> CustomError {
+        CustomError::BtDualBootError(self.into())
+    }
+}
+
+impl Into<CustomError> for std::io::Error {
+    fn into(self) -> CustomError {
+        CustomError::BtDualBootError(self.into())
+    }
+}
+
+impl Into<CustomError> for FromUtf8Error {
+    fn into(self) -> CustomError {
+        CustomError::BtDualBootError(self.into())
+    }
+}
+
+impl Into<CustomError> for serde_ini::de::Error {
+    fn into(self) -> CustomError {
+        CustomError::SerdeError(self)
+    }
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    if cli.verbose {
+        simple_logger::init_with_level(log::Level::Debug).expect("init logger");
+    } else {
+        simple_logger::init_with_level(log::Level::Warn).expect("init logger");
+    }
+
+    let win_devices = get_win_devices().unwrap();
+    println!("{:#?}", win_devices);
+    // update_linux_devices(win_devices);
+}
+
+fn get_win_devices() -> CustomResult<Vec<WinDevice>> {
+    let win_mounts = get_windows_mounts();
+    let win_mounts_str: Vec<_> = win_mounts.iter().map(|x| x.as_str()).collect();
 
     if win_mounts.is_empty() {
-        panic!("didn't find any mounts with windows")
+        return Err("no windows partitions".into());
     }
+    debug!("found {} windows partition(s)", win_mounts.len());
 
-    if win_mounts.len() > 1 {
-        // TODO: handle multiple windows mounts
-        warn!(
-            "reading only 1 windows mount at {}",
-            win_mounts.get(0).expect("checked for emptiness")
-        );
-    }
+    let win_mount = if win_mounts.len() == 1 {
+        win_mounts.get(0).expect("checked len by 1")
+    } else {
+        Select::new(
+            "multiple windows partitions detected. which one to use?",
+            win_mounts_str,
+        )
+        .prompt()
+        .map_err(|e| e.into())?
+    };
 
-    let win_mount = win_mounts.get(0).expect("checked for emptiness");
     let win_reg = Path::new(win_mount).join(Path::new(WINDOWS10_REGISTRY_PATH));
+    if !win_reg.exists() {
+        return Err(format!("didn't find registry in windows {} partition", win_mount).into());
+    }
 
     debug!(
         "running chntpw on the {} registry",
@@ -76,13 +123,10 @@ fn get_win_devices() -> Vec<WinDevice> {
         ])
         .stdout(Stdio::piped())
         .spawn()
-        .expect("failed reged execution");
+        .map_err(|e| e.into())?;
 
-    let output = chntpw
-        .wait_with_output()
-        .expect("failed to wait on reged output")
-        .stdout;
-    let output_str = String::from_utf8(output).expect("failed to stringify");
+    let output = chntpw.wait_with_output().map_err(|e| e.into())?.stdout;
+    let output_str = String::from_utf8(output).map_err(|e| e.into())?;
     let output_clean = output_str
         .split("\r\n")
         .skip(1)
@@ -90,92 +134,77 @@ fn get_win_devices() -> Vec<WinDevice> {
         .collect::<Vec<_>>()
         .join("\n");
     let raw_values: HashMap<String, HashMap<String, String>> =
-        serde_ini::from_str(&output_clean).expect("deserializing ini file");
+        serde_ini::from_str(&output_clean).map_err(|e| e.into())?;
 
-    let bt_dev_count = raw_values
+    let bt_values_1: Vec<_> = raw_values
         .iter()
         .filter(|(k, _)| {
-            let path_len = k.split('\\').count();
+            // Match bt adapters
+            // HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet001\\Services\\BTHPORT\\Parameters\\Keys\\c0fbf9601c13
+            let path_len = k.split("\\").count();
             path_len == 8
         })
-        .count();
-    if bt_dev_count > 1 {
-        debug!("bt devices count {}", bt_dev_count);
-        warn!("only supports 1 bt device");
-    }
-
-    let bt_dev_mac = raw_values
-        .iter()
-        .find(|(k, _)| {
-            let path_len = k.split('\\').count();
-            path_len == 8
+        .map(|(p_k, h)| {
+            // Remove "" quotes around the keys
+            // "AuthReq" -> AuthReq
+            let n_h: HashMap<_, _> = h
+                .into_iter()
+                .map(|(k, v)| (k.trim_matches('"').to_string(), v))
+                .collect();
+            (p_k, n_h)
         })
-        .map(|(k, _)| {
-            let adapter_addr = k
-                .split("\\")
+        .flat_map(|(p_k, h)| {
+            let adapter_mac = p_k
+                .split('\\')
                 .collect::<Vec<&str>>()
                 .into_iter()
                 .rev()
                 .next()
-                .expect("should have adapter's mac")
+                .expect("checked by path_len")
                 .to_string();
-            adapter_addr
-        })
-        .expect("at least one adapter");
 
-    let bt_values_1 = raw_values
-        .iter()
-        .find(|(k, _)| {
-            let path_len = k.split("\\").count();
-            path_len == 8
-            // TODO: Get rid of this repeat
-        })
-        .map(|(k, v)| {
-            // Remove "" quotes around the keys
-            // "AuthReq" -> AuthReq
-            let n_h: HashMap<_, _> = v
-                .into_iter()
-                .map(|(n_k, n_v)| (n_k.trim_matches('"').to_string(), n_v))
-                .collect();
-            (k, n_h)
-        })
-        .map(|(k, v)| {
-            v.into_iter()
-                .filter(|(k, v)| if k == "MasterIRK" { false } else { true })
-        })
-        .expect("bt device registry can't be empty")
-        .map(|(k, v)| {
-            let addr = format!(
-                "hex(b):{},00,00",
-                k.as_bytes()
-                    .chunks(2)
-                    .map(|c| {
-                        format!(
-                            "{:02x}",
-                            u8::from_str_radix(std::str::from_utf8(c).expect("derived before"), 16)
-                                .expect("derived before")
-                        )
-                    })
-                    .rev()
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-            let mut raw_bt = HashMap::new();
-            raw_bt.insert("Address", addr);
-            raw_bt.insert("LTK", v.clone());
-            let s =
-                serde_ini::to_string(&raw_bt).expect("already deserialized before so it's okay");
-            let info: win_device::WinInfo =
-                serde_ini::from_str(&s).expect("problem WinDevice struct");
+            h.into_iter()
+                .filter(|(k, v)| is_valid_64_hex(k))
+                .map(|(k, v)| {
+                    // 4c875d26dc9f -> hex(b):9f,dc,26,5d,87,4c,00,00
+                    let addr = format!(
+                        "hex(b):{},00,00",
+                        k.as_bytes()
+                            .chunks(2)
+                            .map(|c| {
+                                format!(
+                                    "{:02x}",
+                                    u8::from_str_radix(
+                                        std::str::from_utf8(c).expect("derived before"),
+                                        16
+                                    )
+                                    .expect("derived before")
+                                )
+                            })
+                            .rev()
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    );
 
-            WinDevice {
-                info,
-                meta: win_device::WinMeta {
-                    adapter_mac: win_device::WinMac(bt_dev_mac.clone()),
-                },
-            }
+                    let mut raw_bt = HashMap::new();
+                    raw_bt.insert("Address", addr);
+                    raw_bt.insert("LTK", v.clone());
+                    let s = serde_ini::to_string(&raw_bt)
+                        .expect("already deserialized before so it's okay");
+                    let info: win_device::WinInfo =
+                        serde_ini::from_str(&s).expect("problem WinDevice struct");
+
+                    WinDevice {
+                        info,
+                        meta: win_device::WinMeta {
+                            adapter_mac: win_device::WinMac(adapter_mac.clone()),
+                        },
+                    }
+                })
+                .collect::<Vec<_>>()
         })
-        .collect::<Vec<_>>();
+        .collect();
+    debug!("found {} device(s)", bt_values_1.len());
 
     let bt_values_2: Vec<_> = raw_values
         .iter()
@@ -184,12 +213,7 @@ fn get_win_devices() -> Vec<WinDevice> {
             // HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet001\\Services\\BTHPORT\\Parameters\\Keys
             // HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet001\\Services\\BTHPORT\\Parameters\\Keys\\c0fbf9601c13
             let path_len = k.split("\\").count();
-
-            if path_len < 9 {
-                false
-            } else {
-                true
-            }
+            path_len > 8
         })
         .map(|(k, v)| {
             // Remove "" quotes around the keys
@@ -228,7 +252,32 @@ fn get_win_devices() -> Vec<WinDevice> {
     let mut all_devices = vec![];
     all_devices.extend(bt_values_1);
     all_devices.extend(bt_values_2);
-    all_devices
+    Ok(all_devices)
+}
+
+fn get_windows_mounts() -> Vec<String> {
+    let mounts = read_to_string("/proc/mounts").expect("failed to read /proc/mounts");
+
+    let win_mounts: Vec<_> = mounts
+        .split('\n')
+        .filter(|l| l.starts_with("/dev/") && !l.starts_with("/dev/loop"))
+        .map(|l| {
+            let mnt_point = l
+                .split(' ')
+                .skip(1)
+                .next()
+                .expect(&format!("no mounting point in the dev entry {}", l))
+                .to_string();
+            mnt_point
+        })
+        .filter(|mnt_p| {
+            Path::new(mnt_p)
+                .join(Path::new(WINDOWS10_REGISTRY_PATH))
+                .exists()
+        })
+        .collect();
+
+    win_mounts
 }
 
 fn update_linux_devices(win_devices: Vec<WinDevice>) {
